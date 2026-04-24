@@ -1,6 +1,6 @@
 # Brazilian E-Commerce — Análise Exploratória de Dados (Olist)
 
-Dataset público da Olist com **99.441 pedidos** realizados entre 2016 e 2018 no e-commerce brasileiro. Este projeto responde 15 perguntas analíticas com Pandas e PostgreSQL, cobrindo receita, geografia, comportamento do consumidor, tendências temporais e segmentação de clientes.
+Dataset público da Olist com **99.441 pedidos** realizados entre 2016 e 2018 no e-commerce brasileiro. Este projeto responde **27 perguntas analíticas** com Pandas e PostgreSQL, cobrindo receita, geografia, comportamento do consumidor, tendências temporais, segmentação de clientes (RFM), análise de vendedores, logística, reviews e cohort de retenção.
 
 ---
 
@@ -1004,6 +1004,875 @@ Cada pergunta é respondida com duas abordagens: **Pandas** (Python) e **Postgre
 
 ---
 
+---
+
+## Análise de Vendedores
+
+### Pergunta 16: Como se distribui a receita entre os vendedores? (Curva de Pareto)
+
+**Objetivo:** Identificar a concentração de receita nos vendedores e o risco de dependência de poucos fornecedores.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> items = pd.read_csv("olist_order_items_dataset.csv")
+>
+> seller_rev = (
+>     items.groupby('seller_id').agg(
+>         receita=('price', 'sum'),
+>         qtd_pedidos=('order_id', 'nunique'),
+>         qtd_itens=('order_item_id', 'count')
+>     )
+>     .sort_values('receita', ascending=False)
+>     .round(2)
+> )
+>
+> seller_rev['receita_acum_pct'] = (
+>     seller_rev['receita'].cumsum() / seller_rev['receita'].sum() * 100
+> ).round(2)
+>
+> total = len(seller_rev)
+> n_80  = (seller_rev['receita_acum_pct'] <= 80).sum()
+>
+> print(f"Total de vendedores: {total}")
+> print(f"Vendedores que geram 80% da receita: {n_80} ({n_80/total*100:.1f}%)")
+> print(f"\nTop 10 vendedores por receita:")
+> print(seller_rev.head(10))
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> WITH receita_seller AS (
+>     SELECT
+>         seller_id,
+>         ROUND(SUM(price)::numeric, 2)              AS receita,
+>         COUNT(DISTINCT order_id)                   AS qtd_pedidos,
+>         SUM(SUM(price)) OVER ()                    AS receita_total
+>     FROM olist_order_items_dataset
+>     GROUP BY seller_id
+> ),
+> pareto AS (
+>     SELECT *,
+>         ROUND(SUM(receita) OVER (ORDER BY receita DESC)
+>               / receita_total * 100::numeric, 2)   AS receita_acum_pct
+>     FROM receita_seller
+> )
+> SELECT seller_id, receita, qtd_pedidos, receita_acum_pct
+> FROM pareto
+> ORDER BY receita DESC
+> LIMIT 20;
+> ```
+
+</details>
+
+**Insight:** Apenas **543 vendedores (17,5% dos 3.095)** geram **80% da receita** — clássica distribuição de Pareto. O top 10 já concentra **13,1% do faturamento** (R$ 1.787.241). O maior vendedor sozinho gerou **R$ 229.472** com 1.132 pedidos. Essa concentração representa risco operacional: a saída dos 50 maiores vendedores afetaria ~25% da receita da plataforma.
+
+---
+
+### Pergunta 17: Quais vendedores têm as piores e melhores avaliações médias dos clientes?
+
+**Objetivo:** Identificar vendedores que comprometem a reputação da plataforma e os que se destacam positivamente.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> items   = pd.read_csv("olist_order_items_dataset.csv")
+> orders  = pd.read_csv("olist_orders_dataset.csv")
+> reviews = pd.read_csv("olist_order_reviews_dataset.csv")
+>
+> seller_review = (
+>     items[['order_id', 'seller_id', 'price']]
+>     .merge(reviews[['order_id', 'review_score']], on='order_id', how='left')
+>     .groupby('seller_id').agg(
+>         media_score=('review_score', 'mean'),
+>         qtd_avaliacoes=('review_score', 'count'),
+>         receita=('price', 'sum')
+>     )
+>     .round(2)
+> )
+>
+> # Filtra vendedores com volume mínimo de avaliações
+> resultado = seller_review[seller_review['qtd_avaliacoes'] >= 30]
+> print(f"Vendedores com >= 30 avaliações: {len(resultado)}")
+> print(f"\nScore médio da plataforma: {resultado['media_score'].mean():.2f}")
+> print(f"\nPiores 10 vendedores:")
+> print(resultado.sort_values('media_score').head(10))
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> SELECT
+>     i.seller_id,
+>     ROUND(AVG(r.review_score)::numeric, 2) AS media_score,
+>     COUNT(r.review_score)                  AS qtd_avaliacoes,
+>     ROUND(SUM(i.price)::numeric, 2)        AS receita
+> FROM olist_order_items_dataset i
+> LEFT JOIN olist_order_reviews_dataset r USING (order_id)
+> GROUP BY i.seller_id
+> HAVING COUNT(r.review_score) >= 30
+> ORDER BY media_score ASC
+> LIMIT 10;
+> ```
+
+</details>
+
+**Insight:** Entre os **684 vendedores** com 30+ avaliações, a média da plataforma é **4,07**. O pior vendedor tem média de **2,20** com 136 avaliações — e ainda assim gera R$ 13.341 de receita, indicando que clientes insatisfeitos continuam comprando (talvez sem alternativas). A distribuição é assimétrica: **75% dos vendedores** têm score acima de 3,89, mas o mínimo é 2,20. Cruzar score com receita permite criar uma matriz risco × valor para priorizar intervenções.
+
+---
+
+## Análise Logística
+
+### Pergunta 18: Quais pedidos chegaram após o prazo estimado e onde isso ocorre mais?
+
+**Objetivo:** Quantificar falhas de entrega e identificar estados e categorias com maior taxa de atraso.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> orders    = pd.read_csv("olist_orders_dataset.csv", parse_dates=[
+>     'order_purchase_timestamp', 'order_delivered_customer_date',
+>     'order_estimated_delivery_date'])
+> customers = pd.read_csv("olist_customers_dataset.csv")
+>
+> delivered = orders[orders['order_status'] == 'delivered'].copy()
+> delivered['atrasado']   = delivered['order_delivered_customer_date'] > delivered['order_estimated_delivery_date']
+> delivered['dias_atraso'] = (
+>     delivered['order_delivered_customer_date'] - delivered['order_estimated_delivery_date']
+> ).dt.days.clip(lower=0)
+>
+> total = len(delivered)
+> atrasados = delivered['atrasado'].sum()
+> print(f"Entregas com atraso: {atrasados} ({atrasados/total*100:.2f}%)")
+> print(f"Atraso médio (quando atrasado): {delivered[delivered['atrasado']]['dias_atraso'].mean():.1f} dias")
+>
+> resultado = (
+>     delivered
+>     .merge(customers[['customer_id', 'customer_state']], on='customer_id', how='left')
+>     .groupby('customer_state').agg(
+>         total=('order_id', 'count'),
+>         atrasados=('atrasado', 'sum'),
+>         atraso_medio=('dias_atraso', 'mean')
+>     )
+>     .assign(pct_atraso=lambda df: (df['atrasados'] / df['total'] * 100).round(1))
+>     .sort_values('pct_atraso', ascending=False)
+>     .round(2)
+> )
+> print(resultado.head(10))
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> SELECT
+>     c.customer_state,
+>     COUNT(*)                                               AS total,
+>     SUM(CASE WHEN o.order_delivered_customer_date
+>                   > o.order_estimated_delivery_date THEN 1 ELSE 0 END) AS atrasados,
+>     ROUND(SUM(CASE WHEN o.order_delivered_customer_date
+>                        > o.order_estimated_delivery_date THEN 1 ELSE 0 END)
+>           * 100.0 / COUNT(*)::numeric, 1)                 AS pct_atraso,
+>     ROUND(AVG(GREATEST(
+>         o.order_delivered_customer_date::date - o.order_estimated_delivery_date::date,
+>         0))::numeric, 1)                                   AS atraso_medio_dias
+> FROM olist_orders_dataset o
+> LEFT JOIN olist_customers_dataset c USING (customer_id)
+> WHERE o.order_status = 'delivered'
+> GROUP BY c.customer_state
+> ORDER BY pct_atraso DESC;
+> ```
+
+</details>
+
+**Insight:** **8,11%** dos pedidos entregues (7.826 de 96.478) chegaram após o prazo estimado — com atraso médio de **8,9 dias** e máximo de **188 dias**. Os estados mais afetados são **Alagoas (23,9%)**, **Maranhão (19,7%)** e **Piauí (16,0%)**. Por categoria, **áudio (13,1%)** e **moda praia (12,8%)** lideram. Interessante: o Norte tem alta taxa de atraso mas estimativas conservadoras (Q12), enquanto o Nordeste parece ter estimativas que não cobrem a realidade logística local.
+
+---
+
+### Pergunta 19: Quanto tempo os vendedores levam para enviar o pedido ao transportador após a aprovação?
+
+**Objetivo:** Identificar gargalos no processo do vendedor que impactam o prazo total de entrega.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> orders  = pd.read_csv("olist_orders_dataset.csv", parse_dates=[
+>     'order_approved_at', 'order_delivered_carrier_date'])
+> items   = pd.read_csv("olist_order_items_dataset.csv")
+> sellers = pd.read_csv("olist_sellers_dataset.csv")
+>
+> shipped = orders.dropna(subset=['order_approved_at', 'order_delivered_carrier_date']).copy()
+> shipped['horas_preparo'] = (
+>     shipped['order_delivered_carrier_date'] - shipped['order_approved_at']
+> ).dt.total_seconds() / 3600
+> shipped = shipped[shipped['horas_preparo'] >= 0]
+>
+> seller_estado = (items[['order_id', 'seller_id']].drop_duplicates('order_id')
+>                  .merge(sellers[['seller_id', 'seller_state']], on='seller_id', how='left'))
+>
+> resultado = (
+>     shipped.merge(seller_estado, on='order_id', how='left')
+>     .groupby('seller_state').agg(
+>         media_horas=('horas_preparo', 'mean'),
+>         mediana_horas=('horas_preparo', 'median'),
+>         qtd=('order_id', 'count')
+>     )
+>     .sort_values('media_horas')
+>     .round(1)
+> )
+> print(f"Média geral: {shipped['horas_preparo'].mean():.1f}h ({shipped['horas_preparo'].mean()/24:.1f} dias)")
+> print(resultado)
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> SELECT
+>     s.seller_state,
+>     ROUND(AVG(EXTRACT(EPOCH FROM
+>         (o.order_delivered_carrier_date - o.order_approved_at)) / 3600)::numeric, 1)
+>         AS media_horas,
+>     ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
+>         ORDER BY EXTRACT(EPOCH FROM
+>             (o.order_delivered_carrier_date - o.order_approved_at)) / 3600)
+>         ::numeric, 1)
+>         AS mediana_horas,
+>     COUNT(*) AS qtd
+> FROM olist_orders_dataset o
+> JOIN olist_order_items_dataset i USING (order_id)
+> JOIN olist_sellers_dataset s USING (seller_id)
+> WHERE o.order_approved_at IS NOT NULL
+>   AND o.order_delivered_carrier_date IS NOT NULL
+>   AND o.order_delivered_carrier_date >= o.order_approved_at
+> GROUP BY s.seller_state
+> ORDER BY media_horas;
+> ```
+
+</details>
+
+**Insight:** O tempo médio de preparo (aprovação → envio ao transportador) é de **68,6 horas (2,9 dias)**, com mediana de **44,4h**. Vendedores do **Piauí** são os mais rápidos (35,9h), enquanto os do **Maranhão** são os mais lentos (113,3h — mais de 4,5 dias). SP, que concentra 68K pedidos, tem média de 68,6h — exatamente na média nacional. Reduzir o tempo de preparo dos 20% mais lentos para a mediana nacional economizaria ~1 dia no prazo final de entrega para milhares de pedidos.
+
+---
+
+## Análise de Reviews
+
+### Pergunta 20: Quais categorias têm as melhores e piores avaliações médias dos clientes?
+
+**Objetivo:** Identificar categorias problemáticas que corroem a satisfação e as que consistentemente encantam.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> items    = pd.read_csv("olist_order_items_dataset.csv")
+> products = pd.read_csv("olist_products_dataset.csv")
+> transl   = pd.read_csv("product_category_name_translation.csv")
+> reviews  = pd.read_csv("olist_order_reviews_dataset.csv")
+>
+> cat_reviews = (
+>     items
+>     .merge(products[['product_id', 'product_category_name']], on='product_id', how='left')
+>     .merge(transl, on='product_category_name', how='left')
+>     .assign(categoria=lambda df: df['product_category_name_english']
+>             .fillna(df['product_category_name']))
+>     [['order_id', 'categoria']].drop_duplicates('order_id')
+>     .merge(reviews[['order_id', 'review_score']], on='order_id', how='inner')
+>     .groupby('categoria').agg(
+>         media_score=('review_score', 'mean'),
+>         pct_negativas=('review_score', lambda x: (x <= 2).sum() / len(x) * 100),
+>         pct_cinco=('review_score', lambda x: (x == 5).sum() / len(x) * 100),
+>         qtd=('review_score', 'count')
+>     )
+>     .round(2)
+> )
+>
+> resultado = cat_reviews[cat_reviews['qtd'] >= 100]
+> print("Piores 10:")
+> print(resultado.sort_values('media_score').head(10))
+> print("\nMelhores 10:")
+> print(resultado.sort_values('media_score', ascending=False).head(10))
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> SELECT
+>     COALESCE(t.product_category_name_english, p.product_category_name) AS categoria,
+>     ROUND(AVG(r.review_score)::numeric, 2)                              AS media_score,
+>     ROUND(SUM(CASE WHEN r.review_score <= 2 THEN 1 ELSE 0 END)
+>           * 100.0 / COUNT(*)::numeric, 1)                               AS pct_negativas,
+>     ROUND(SUM(CASE WHEN r.review_score = 5 THEN 1 ELSE 0 END)
+>           * 100.0 / COUNT(*)::numeric, 1)                               AS pct_cinco,
+>     COUNT(*)                                                             AS qtd
+> FROM olist_order_items_dataset i
+> LEFT JOIN olist_products_dataset p USING (product_id)
+> LEFT JOIN product_category_name_translation t ON p.product_category_name = t.product_category_name
+> INNER JOIN olist_order_reviews_dataset r USING (order_id)
+> GROUP BY categoria
+> HAVING COUNT(*) >= 100
+> ORDER BY media_score ASC
+> LIMIT 10;
+> ```
+
+</details>
+
+**Insight:** **office_furniture** é a categoria mais problemática com score médio de **3,62** e **22,6% de avaliações negativas** (notas 1–2). **fashion_male_clothing** tem a maior taxa de notas 1–2 (**26,1%**). No extremo oposto, **books_general_interest** lidera com **4,47** de média e **73,3% de notas 5**. A dicotomia é clara: **produtos físicos com entrega complexa** (móveis, eletros) têm piores avaliações; **produtos leves e com expectativas bem definidas** (livros, alimentos) têm as melhores.
+
+---
+
+### Pergunta 21: Quanto tempo a plataforma leva para responder às avaliações dos clientes?
+
+**Objetivo:** Avaliar a agilidade no tratamento do feedback do cliente e se o score da avaliação influencia a velocidade de resposta.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> reviews = pd.read_csv("olist_order_reviews_dataset.csv",
+>                       parse_dates=['review_creation_date', 'review_answer_timestamp'])
+>
+> reviews['horas_resposta'] = (
+>     reviews['review_answer_timestamp'] - reviews['review_creation_date']
+> ).dt.total_seconds() / 3600
+>
+> validos = reviews[reviews['horas_resposta'] >= 0]
+>
+> print(f"Tempo médio de resposta: {validos['horas_resposta'].mean():.1f}h "
+>       f"({validos['horas_resposta'].mean()/24:.1f} dias)")
+> print(f"Mediana: {validos['horas_resposta'].median():.1f}h")
+>
+> por_score = (
+>     validos.groupby('review_score')['horas_resposta']
+>     .agg(['mean', 'median', 'count'])
+>     .round(1)
+> )
+> print("\nTempo de resposta por nota:")
+> print(por_score)
+>
+> faixas = pd.cut(validos['horas_resposta'],
+>                 bins=[0, 24, 72, 168, 720, 99999],
+>                 labels=['<1 dia', '1-3 dias', '3-7 dias', '7-30 dias', '>30 dias'])
+> print("\nDistribuição dos tempos:")
+> print((faixas.value_counts(normalize=True) * 100).round(1))
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> SELECT
+>     review_score,
+>     ROUND(AVG(EXTRACT(EPOCH FROM
+>         (review_answer_timestamp - review_creation_date)) / 3600)::numeric, 1) AS media_horas,
+>     ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (
+>         ORDER BY EXTRACT(EPOCH FROM
+>             (review_answer_timestamp - review_creation_date)) / 3600)
+>         ::numeric, 1)                                                           AS mediana_horas,
+>     COUNT(*)                                                                    AS qtd
+> FROM olist_order_reviews_dataset
+> WHERE review_answer_timestamp >= review_creation_date
+> GROUP BY review_score
+> ORDER BY review_score;
+> ```
+
+</details>
+
+**Insight:** O tempo médio de resposta às avaliações é de **75,6 horas (3,1 dias)**, com mediana de **40,2h**. **71,9%** das respostas chegam em até 3 dias. Curiosamente, **avaliações negativas (nota 1) recebem resposta em 73,2h** — praticamente igual à média geral — sugerindo que não há priorização de reclamações urgentes. Avaliações nota 5 demoram levemente mais (**77h**), pois são a maioria e podem ser processadas em lote. Uma fila prioritária para notas 1–2 poderia reduzir o impacto reputacional de avaliações negativas.
+
+---
+
+## Análise Financeira
+
+### Pergunta 22: Em quais categorias o frete representa a maior fatia do valor total pago?
+
+**Objetivo:** Identificar onde o custo logístico penaliza mais o consumidor e cria fricção na conversão.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> items    = pd.read_csv("olist_order_items_dataset.csv")
+> products = pd.read_csv("olist_products_dataset.csv")
+> transl   = pd.read_csv("product_category_name_translation.csv")
+>
+> df = (
+>     items
+>     .merge(products[['product_id', 'product_category_name']], on='product_id', how='left')
+>     .merge(transl, on='product_category_name', how='left')
+>     .assign(
+>         categoria=lambda d: d['product_category_name_english'].fillna(d['product_category_name']),
+>         pct_frete=lambda d: d['freight_value'] / (d['price'] + d['freight_value']) * 100
+>     )
+> )
+>
+> resultado = (
+>     df.groupby('categoria').agg(
+>         preco_medio=('price', 'mean'),
+>         frete_medio=('freight_value', 'mean'),
+>         pct_frete_media=('pct_frete', 'mean'),
+>         qtd=('order_item_id', 'count')
+>     )
+>     .round(2)
+> )
+>
+> filtrado = resultado[resultado['qtd'] >= 100]
+> print("Categorias onde o frete pesa mais (%):")
+> print(filtrado.sort_values('pct_frete_media', ascending=False).head(10))
+>
+> total_frete = items['freight_value'].sum()
+> total_produto = items['price'].sum()
+> print(f"\nFrete total: R$ {total_frete:,.2f} ({total_frete/(total_frete+total_produto)*100:.1f}% do total)")
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> SELECT
+>     COALESCE(t.product_category_name_english, p.product_category_name) AS categoria,
+>     ROUND(AVG(i.price)::numeric, 2)          AS preco_medio,
+>     ROUND(AVG(i.freight_value)::numeric, 2)  AS frete_medio,
+>     ROUND(AVG(i.freight_value / NULLIF(i.price + i.freight_value, 0) * 100)
+>           ::numeric, 1)                       AS pct_frete_media,
+>     COUNT(*)                                  AS qtd
+> FROM olist_order_items_dataset i
+> LEFT JOIN olist_products_dataset p USING (product_id)
+> LEFT JOIN product_category_name_translation t ON p.product_category_name = t.product_category_name
+> GROUP BY categoria
+> HAVING COUNT(*) >= 100
+> ORDER BY pct_frete_media DESC
+> LIMIT 10;
+> ```
+
+</details>
+
+**Insight:** O frete representa **14,2% do total** movimentado na plataforma (R$ 2.251.909 sobre R$ 15.843.553). As categorias mais penalizadas são **eletrônicos (35,8%)** e **suprimentos natalinos (33,8%)** — itens baratos com frete alto. No extremo oposto, **computadores** têm frete de apenas **5,2%** do valor (produto caro + frete fixo). Nas categorias com frete >25%, ofertas de frete grátis ou subsidiado acima de determinado valor de compra poderiam aumentar significativamente a taxa de conversão.
+
+---
+
+### Pergunta 23: Como se distribui o parcelamento no cartão de crédito?
+
+**Objetivo:** Entender o comportamento de financiamento dos clientes e a relação entre parcelamento e ticket médio.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> payments = pd.read_csv("olist_order_payments_dataset.csv")
+>
+> cc = payments[payments['payment_type'] == 'credit_card'].copy()
+>
+> faixas = pd.cut(cc['payment_installments'],
+>                 bins=[0, 1, 3, 6, 12, 24],
+>                 labels=['1x', '2-3x', '4-6x', '7-12x', '13-24x'])
+>
+> resultado = (
+>     cc.groupby(faixas, observed=True)['payment_value']
+>     .agg(qtd='count', valor_medio='mean')
+>     .round(2)
+> )
+> resultado['pct'] = (resultado['qtd'] / resultado['qtd'].sum() * 100).round(1)
+>
+> print(f"Total transações cartão: {len(cc):,}")
+> print(f"Média de parcelas: {cc['payment_installments'].mean():.2f}")
+> print(resultado)
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> SELECT
+>     CASE
+>         WHEN payment_installments = 1  THEN '1x'
+>         WHEN payment_installments <= 3 THEN '2-3x'
+>         WHEN payment_installments <= 6 THEN '4-6x'
+>         WHEN payment_installments <= 12 THEN '7-12x'
+>         ELSE '13-24x'
+>     END AS faixa_parcelas,
+>     COUNT(*)                                          AS qtd,
+>     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER ()
+>           ::numeric, 1)                               AS pct,
+>     ROUND(AVG(payment_value)::numeric, 2)             AS valor_medio
+> FROM olist_order_payments_dataset
+> WHERE payment_type = 'credit_card'
+> GROUP BY faixa_parcelas
+> ORDER BY valor_medio;
+> ```
+
+</details>
+
+**Insight:** **33,1% das transações** no cartão são à vista (1x), com ticket médio de R$ 95,87. A parcela mais comum depois é **2–3x (29,7%)** com R$ 134. Compras **7–12x** têm ticket médio de **R$ 333** — 3,5x mais que à vista. Há um pico anômalo em **10 parcelas (6,94%)**, sugerindo que algum produto ou promoção específica empurrou para esse parcelamento exato. Campanhas de "parcele em 10x sem juros" claramente elevam o ticket médio e poderiam ser replicadas em outras categorias.
+
+---
+
+### Pergunta 24: Quantos pedidos combinam múltiplos métodos de pagamento?
+
+**Objetivo:** Entender o uso de pagamentos combinados (ex.: cartão + voucher) e identificar padrões de uso de cupons.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> payments = pd.read_csv("olist_order_payments_dataset.csv")
+>
+> multi = payments.groupby('order_id').agg(
+>     n_metodos=('payment_type', 'nunique'),
+>     n_sequencias=('payment_sequential', 'max'),
+>     valor_total=('payment_value', 'sum')
+> ).reset_index()
+>
+> print(f"Pedidos com 1 método:  {(multi['n_metodos']==1).sum():,}")
+> print(f"Pedidos com 2+ métodos: {(multi['n_metodos']>1).sum():,} "
+>       f"({(multi['n_metodos']>1).sum()/len(multi)*100:.2f}%)")
+>
+> combos = (
+>     payments.groupby('order_id')['payment_type']
+>     .apply(lambda x: '+'.join(sorted(x.unique())))
+>     .value_counts()
+>     .head(10)
+> )
+> print("\nTop combinações de pagamento:")
+> print(combos)
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> WITH metodos_por_pedido AS (
+>     SELECT order_id,
+>            COUNT(DISTINCT payment_type) AS n_metodos,
+>            MAX(payment_sequential)       AS n_sequencias
+>     FROM olist_order_payments_dataset
+>     GROUP BY order_id
+> )
+> SELECT
+>     CASE WHEN n_metodos = 1 THEN '1 método' ELSE '2+ métodos' END AS tipo,
+>     COUNT(*)                                                        AS qtd,
+>     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER ()::numeric, 2)    AS pct
+> FROM metodos_por_pedido
+> GROUP BY tipo
+> ORDER BY qtd DESC;
+> ```
+
+</details>
+
+**Insight:** **2.246 pedidos (2,26%)** combinam mais de um método de pagamento. A combinação mais comum é **cartão de crédito + voucher (2.245 pedidos)** — praticamente todos os casos de multipagamento envolvem um cupom sendo aplicado parcialmente. O valor médio desses pedidos tende a ser mais alto (cupons usados em compras maiores). Um único pedido chegou a usar **11 sequências de pagamento**. Vouchers são usados quase exclusivamente como complemento, não como forma de pagamento principal.
+
+---
+
+## Análise de Cohort
+
+### Pergunta 25: Qual é a taxa de retenção dos clientes por cohort de primeira compra?
+
+**Objetivo:** Medir se clientes que chegaram em diferentes períodos têm comportamentos de recompra distintos.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> orders    = pd.read_csv("olist_orders_dataset.csv", parse_dates=['order_purchase_timestamp'])
+> customers = pd.read_csv("olist_customers_dataset.csv")
+>
+> cust_orders = (
+>     orders.merge(customers[['customer_id', 'customer_unique_id']], on='customer_id', how='left')
+>     .assign(ano_mes=lambda df: df['order_purchase_timestamp'].dt.to_period('M'))
+> )
+>
+> primeira_compra = (cust_orders.groupby('customer_unique_id')['ano_mes']
+>                   .min().reset_index().rename(columns={'ano_mes': 'cohort'}))
+>
+> cohort_df = cust_orders.merge(primeira_compra, on='customer_unique_id', how='left')
+> cohort_df['periodo'] = (cohort_df['ano_mes'] - cohort_df['cohort']).apply(lambda x: x.n)
+>
+> cohort_tab = (cohort_df.groupby(['cohort', 'periodo'])['customer_unique_id']
+>               .nunique().unstack(fill_value=0))
+> cohort_pct = cohort_tab.divide(cohort_tab[0], axis=0) * 100
+>
+> print("Retenção % — cohorts 2017 (primeiros 6 meses):")
+> print(cohort_pct.loc['2017-01':'2017-12', 0:5].round(1))
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> WITH primeira_compra AS (
+>     SELECT
+>         c.customer_unique_id,
+>         DATE_TRUNC('month', MIN(o.order_purchase_timestamp)) AS cohort
+>     FROM olist_orders_dataset o
+>     JOIN olist_customers_dataset c USING (customer_id)
+>     GROUP BY c.customer_unique_id
+> ),
+> cohort_data AS (
+>     SELECT
+>         pc.cohort,
+>         DATE_PART('month', AGE(DATE_TRUNC('month', o.order_purchase_timestamp), pc.cohort)) AS periodo,
+>         c.customer_unique_id
+>     FROM olist_orders_dataset o
+>     JOIN olist_customers_dataset c USING (customer_id)
+>     JOIN primeira_compra pc USING (customer_unique_id)
+> )
+> SELECT
+>     TO_CHAR(cohort, 'YYYY-MM')  AS cohort,
+>     periodo,
+>     COUNT(DISTINCT customer_unique_id) AS clientes
+> FROM cohort_data
+> GROUP BY cohort, periodo
+> ORDER BY cohort, periodo;
+> ```
+
+</details>
+
+**Insight:** A análise de cohort confirma de forma contundente a baixa retenção: a **retenção média no mês 1** (clientes que voltaram a comprar no mês seguinte à primeira compra) é de apenas **4,4%** — e esse número cai progressivamente nos meses seguintes (geralmente abaixo de 0,5% no mês 5). Não há diferença significativa entre cohorts de diferentes períodos: clientes de jan/2017 e ago/2017 têm o mesmo comportamento. Isso indica que o problema é estrutural — não há mecanismo de retenção ativo — e não depende de sazonalidade ou maturidade da plataforma.
+
+---
+
+## Análise de Cancelamentos
+
+### Pergunta 26: Em quais estados e categorias os cancelamentos são mais frequentes?
+
+**Objetivo:** Identificar padrões geográficos e de produto nos cancelamentos para reduzir essa taxa.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> orders    = pd.read_csv("olist_orders_dataset.csv")
+> customers = pd.read_csv("olist_customers_dataset.csv")
+> items     = pd.read_csv("olist_order_items_dataset.csv")
+> products  = pd.read_csv("olist_products_dataset.csv")
+> transl    = pd.read_csv("product_category_name_translation.csv")
+>
+> canceled = orders[orders['order_status'] == 'canceled']
+> total_por_estado = (
+>     orders.merge(customers[['customer_id', 'customer_state']], on='customer_id', how='left')
+>     .groupby('customer_state')['order_id'].count()
+> )
+>
+> taxa_estado = (
+>     canceled.merge(customers[['customer_id', 'customer_state']], on='customer_id', how='left')
+>     .groupby('customer_state')['order_id'].count()
+>     .rename('qtd_cancel')
+>     .to_frame()
+>     .assign(total=total_por_estado,
+>             taxa_pct=lambda df: (df['qtd_cancel'] / df['total'] * 100).round(2))
+>     .sort_values('taxa_pct', ascending=False)
+>     .head(10)
+> )
+> print(f"Total cancelamentos: {len(canceled)}")
+> print(taxa_estado)
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> WITH totais AS (
+>     SELECT c.customer_state, COUNT(*) AS total
+>     FROM olist_orders_dataset o
+>     JOIN olist_customers_dataset c USING (customer_id)
+>     GROUP BY c.customer_state
+> ),
+> cancelados AS (
+>     SELECT c.customer_state, COUNT(*) AS qtd_cancel
+>     FROM olist_orders_dataset o
+>     JOIN olist_customers_dataset c USING (customer_id)
+>     WHERE o.order_status = 'canceled'
+>     GROUP BY c.customer_state
+> )
+> SELECT
+>     t.customer_state,
+>     COALESCE(c.qtd_cancel, 0)                          AS qtd_cancel,
+>     t.total,
+>     ROUND(COALESCE(c.qtd_cancel, 0) * 100.0 / t.total
+>           ::numeric, 2)                                 AS taxa_pct
+> FROM totais t
+> LEFT JOIN cancelados c USING (customer_state)
+> ORDER BY taxa_pct DESC;
+> ```
+
+</details>
+
+**Insight:** Há **625 cancelamentos** no total (0,63% de todos os pedidos). **Roraima (2,17%)** e **Rondônia (1,19%)** têm as maiores taxas, mas com volumes pequenos. **SP** concentra o maior número absoluto (327 cancelamentos) por ser o maior estado. Por categoria, **sports_leisure (47)**, **housewares (37)** e **health_beauty (36)** têm o maior volume de cancelamentos — as mesmas categorias top em receita, o que é esperado pelo volume. A taxa de cancelamento por categoria é baixa o suficiente para não ser um alerta crítico, mas merece monitoramento contínuo.
+
+---
+
+## Análise de Produtos
+
+### Pergunta 27: A quantidade de fotos e o tamanho da descrição impactam a satisfação do cliente?
+
+**Objetivo:** Avaliar se investir em conteúdo de produto (mais fotos, descrições mais completas) melhora as avaliações.
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white"><img src="https://img.shields.io/badge/Pandas-Python-3776AB?style=flat&logo=python&logoColor=white" alt="Python"></picture> &nbsp;<b>Pandas</b></summary>
+
+<br>
+
+> ```python
+> import pandas as pd
+>
+> items    = pd.read_csv("olist_order_items_dataset.csv")
+> products = pd.read_csv("olist_products_dataset.csv")
+> reviews  = pd.read_csv("olist_order_reviews_dataset.csv")
+>
+> df = (
+>     items[['order_id', 'product_id']]
+>     .merge(products[['product_id', 'product_photos_qty', 'product_description_lenght']],
+>            on='product_id', how='left')
+>     .merge(reviews[['order_id', 'review_score']], on='order_id', how='left')
+>     .dropna(subset=['product_photos_qty', 'review_score'])
+> )
+>
+> score_por_foto = (
+>     df.groupby('product_photos_qty')['review_score']
+>     .agg(media_score='mean', qtd='count')
+>     .round(3)
+> )
+>
+> faixa_desc = pd.cut(df['product_description_lenght'],
+>                     bins=[0, 200, 500, 1000, 2000, 4000],
+>                     labels=['<200', '200-500', '500-1000', '1000-2000', '>2000'])
+> score_por_desc = df.groupby(faixa_desc, observed=True)['review_score'].agg(['mean', 'count']).round(3)
+>
+> corr_fotos = df['product_photos_qty'].corr(df['review_score'])
+> corr_desc  = df['product_description_lenght'].corr(df['review_score'])
+>
+> print(score_por_foto[score_por_foto['qtd'] >= 50])
+> print(f"\nCorrelação fotos × score: {corr_fotos:.3f}")
+> print(f"Correlação descrição × score: {corr_desc:.3f}")
+> print("\nScore por faixa de descrição:")
+> print(score_por_desc)
+> ```
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white"><img src="https://img.shields.io/badge/PostgreSQL-SQL-4169E1?style=flat&logo=postgresql&logoColor=white" alt="SQL"></picture> &nbsp;<b>PostgreSQL</b></summary>
+
+<br>
+
+> ```sql
+> SELECT
+>     p.product_photos_qty,
+>     ROUND(AVG(r.review_score)::numeric, 3) AS media_score,
+>     COUNT(*)                                AS qtd,
+>     ROUND(CORR(p.product_photos_qty::float, r.review_score::float)
+>           ::numeric, 3)                     AS correlacao
+> FROM olist_order_items_dataset i
+> LEFT JOIN olist_products_dataset p USING (product_id)
+> LEFT JOIN olist_order_reviews_dataset r USING (order_id)
+> WHERE p.product_photos_qty IS NOT NULL
+> GROUP BY p.product_photos_qty
+> HAVING COUNT(*) >= 50
+> ORDER BY p.product_photos_qty;
+> ```
+
+</details>
+
+**Insight:** A correlação entre número de fotos e review score é de apenas **0,023** — praticamente nula. O mesmo vale para o tamanho da descrição (**0,013**). Produtos com **1 foto** têm score médio de **3,999**, e produtos com **5 fotos** chegam a **4,156** — uma diferença de apenas 0,157 pontos. Isso sugere que **o conteúdo visual do produto não é o driver da satisfação** — a experiência de entrega (prazo, estado do produto) domina. No entanto, mais fotos correlacionam levemente com categorias de maior qualidade, o que pode explicar o efeito marginal observado.
+
+---
+
 ## Conclusão
 
 | Tema | Perguntas | Principal Descoberta |
@@ -1014,6 +1883,15 @@ Cada pergunta é respondida com duas abordagens: **Pandas** (Python) e **Postgre
 | Comportamento | 10, 11, 12 | 97% entregues; apenas 3,12% recompram; entrega chega 11 dias antes do estimado |
 | Correlações | 13, 14 | Prazo impacta nota (-0,334); peso é o principal driver do frete (0,610) |
 | Segmentação RFM | 15 | 41% são Potential Loyalists; Champions têm ticket de R$ 334 e compra recente |
+| Vendedores | 16, 17 | 17,5% dos vendedores geram 80% da receita; pior vendedor tem score 2,20 com 136 avaliações |
+| Logística | 18, 19 | 8,11% dos pedidos chegam atrasados; tempo médio de preparo é 2,9 dias (Maranhão: 4,7 dias) |
+| Reviews | 20, 21 | office_furniture tem score 3,62 e 22,6% de negativas; respostas levam 3,1 dias em média |
+| Financeiro | 22, 23, 24 | Frete = 14,2% do total; compras em 10x têm ticket 3,5x maior que à vista; 2,26% usam múltiplos métodos |
+| Cohort | 25 | Retenção no mês 1 é de apenas 4,4% — consistente em todos os cohorts, problema estrutural |
+| Cancelamentos | 26 | 625 cancelamentos (0,63%); RR tem maior taxa (2,17%); sports_leisure lidera em volume |
+| Produtos | 27 | Fotos e tamanho da descrição têm correlação quase nula com o score (0,023 e 0,013) |
+
+> **Insight geral:** A Olist opera com excelência logística (97% de entrega, 11 dias de antecedência) e crescimento acelerado (23x em 2 anos). Os dois maiores desafios estruturais são a **hiperdependência geográfica de SP** (64% da receita de vendedores) e a **baixíssima retenção** (retenção mês 1 de apenas 4,4% em todos os cohorts). A análise de Pareto mostra que 543 vendedores (17,5%) geram 80% da receita — risco de concentração. A satisfação do cliente é dominada pelo prazo de entrega (correlação -0,334 com o score), não pelo conteúdo visual do produto. Converter os 38.399 Potential Loyalists e reduzir o tempo de preparo dos vendedores mais lentos são as alavancas de maior impacto imediato.
 
 > **Insight geral:** A Olist opera com excelência logística (97% de entrega, 11 dias de antecedência) e crescimento acelerado (23x em 2 anos). Os dois maiores desafios estruturais são a **hiperdependência geográfica de SP** (oferta e demanda) e a **baixíssima retenção** (96,88% compram apenas uma vez). Converter os 38.399 Potential Loyalists com campanhas personalizadas na janela segunda-feira/16h pode aumentar significativamente o LTV da base sem necessidade de aquisição de novos clientes.
 
